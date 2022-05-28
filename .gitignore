@@ -1,0 +1,5 @@
+**/logs
+**/datasets
+**/data
+*.tar.gz
+*.pth
