@@ -140,6 +140,28 @@ class ContrastiveRanking(nn.Module):
                     'truck': ['automobile', 'ship', 'airplane', 'horse']
                     }
 
+            
+            # cats = {'person': ['person'],
+            #             'bird': ['bird', 'aeroplane'],
+            #             'cat': ['dog', 'sheep'],
+            #             'cow': ['cow'],
+            #             'dog': ['dog', 'cat'],
+            #             'horse': ['horse', 'dog', 'cat'],
+            #             'sheep': ['sheep'],
+            #             'aeroplane': ['aeroplane', 'bird', 'boat'],
+            #             'bicycle': ['bicycle', 'motorbike'],
+            #             'boat': ['boat', 'car', ' bus'],
+            #             'bus': ['bus', 'car', 'boat'],
+            #             'car': ['car', 'bus'],
+            #             'motorbike': ['motorbike', 'bicycle', 'car'],
+            #             'train': ['train', 'car'],
+            #             'bottle': ['bottle', '']
+                    
+            #         'Person': ['person'],
+            #             'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
+            #             'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train'],
+            #             'Indoor': ['bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
+
             ## Swap from 0:apple to apple:0
             name2idx = {}
             for idx in class_names:

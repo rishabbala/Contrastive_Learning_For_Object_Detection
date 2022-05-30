@@ -23,6 +23,9 @@ from util import set_optimizer, save_model
 from util import str2bool
 from demo.demo import run_test, get_parser, setup_cfg
 from detectron2.utils.visualizer import Visualizer, VisImage
+from torch.utils.data import Dataset, DataLoader
+
+from testloader import TestDataLoader
 
 tr = torchvision.models.wide_resnet50_2()
 
@@ -40,6 +43,7 @@ def parse_option():
                         help='training or validation')
     parser.add_argument('--test', type=str2bool, default='True',
                         help='Test object detection')
+    parser.add_argument('--test_dir', type=str, default=None)
     parser.add_argument('--checkpoint', type=str, default='./')
     parser.add_argument('--print_freq', type=int, default=10,
                         help='print frequency')
@@ -182,41 +186,48 @@ def parse_option():
 
     return opt
 
+class VOC_collate:
+    def __init__(self, train=False):
+        self.train=train
 
-def voc_collate(batch):
-    labels = []
-    images_q = []
-    images_k = []
+    def __call__(self, batch):
+        labels = []
+        images_q = []
+        images_k = []
 
-    train_transform = TwoCropTransform(transforms.Compose([
-        transforms.RandomResizedCrop(size=img_size, scale=(0.9, 1.)),
-        transforms.RandomHorizontalFlip(),
-        # transforms.RandomApply([
-        #     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-        # ], p=0.8),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.Resize((img_size, img_size)),
-    ]))
+        if self.train == True:
+            train_transform = TwoCropTransform(transforms.Compose([
+                # transforms.RandomResizedCrop(size=img_size, scale=(0.9, 1.)),
+                transforms.RandomHorizontalFlip(),
+                # transforms.RandomApply([
+                #     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+                # ], p=0.8),
+                # transforms.RandomGrayscale(p=0.2),
+                transforms.Resize((img_size, img_size)),
+            ]))
 
-    for i in batch:
-        for obj in i[1]['annotation']['object']:
-            l = obj['name']
-            x1 = int(obj['bndbox']['xmin'])
-            x2 = int(obj['bndbox']['xmax'])
-            y1 = int(obj['bndbox']['ymin'])
-            y2 = int(obj['bndbox']['ymax'])
-            img = i[0][:, y1:y2, x1:x2]
-            img = train_transform(img)
-            images_q.append(img[0])
-            images_k.append(img[1])
-            labels.append(l)
+        else:
+            train_transform = TwoCropTransform(transforms.Resize((img_size, img_size)))
 
-    images_q = torch.stack(images_q)
-    images_k = torch.stack(images_k)
+        for i in batch:
+            for obj in i[1]['annotation']['object']:
+                l = obj['name']
+                x1 = int(obj['bndbox']['xmin'])
+                x2 = int(obj['bndbox']['xmax'])
+                y1 = int(obj['bndbox']['ymin'])
+                y2 = int(obj['bndbox']['ymax'])
+                img = i[0][:, y1:y2, x1:x2]
+                img = train_transform(img)
+                images_q.append(img[0])
+                images_k.append(img[1])
+                labels.append(l)
 
-    images = [images_q, images_k]
+        images_q = torch.stack(images_q)
+        images_k = torch.stack(images_k)
 
-    return images, labels
+        images = [images_q, images_k]
+
+        return images, labels
 
 
 
@@ -233,6 +244,8 @@ def set_loader(opt):
         std=(0.229, 0.224, 0.225)
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
+
+    global normalize
     normalize = transforms.Normalize(mean=mean, std=std)
 
     train_transform = transforms.Compose([
@@ -246,16 +259,11 @@ def set_loader(opt):
         normalize,
     ])
 
+
     val_transform = transforms.Compose([
                     transforms.ToTensor(),
                     normalize,
     ])
-
-    # test_transform = transforms.Compose([
-    #                  transforms.ToTensor(),
-    #                  transforms.Resize((opt.size, opt.size)),
-    #                  normalize,
-    # ])
 
     if opt.dataset == 'voc':
         train_dataset = datasets.VOCDetection(root=opt.data_folder,
@@ -284,6 +292,7 @@ def set_loader(opt):
         val_dataset = datasets.CIFAR100(root=opt.data_folder,
                                train=False,
                                transform=val_transform)
+
     elif opt.dataset=='cifar10':
         train_dataset = datasets.CIFAR10(root=opt.data_folder,
                                      transform=TwoCropTransform(train_transform),
@@ -303,18 +312,35 @@ def set_loader(opt):
     print("Valid Dataset size:", len(val_dataset))
     # print("Test Dataset size:", len(test_dataset))
 
-    train_sampler = None
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-        num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=voc_collate)
+    if opt.dataset == 'voc':
+        train_sampler = None
+        train_collate = VOC_collate(train=True)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=train_collate)
 
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-        num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=voc_collate)
+        val_collate = VOC_collate(train=False)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=val_collate)
 
-    mean_loader = torch.utils.data.DataLoader(
-        mean_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-        num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=voc_collate)
+        mean_loader = torch.utils.data.DataLoader(
+            mean_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=val_collate)
+
+    else:
+        train_sampler = None
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
+
+        mean_loader = torch.utils.data.DataLoader(
+            mean_dataset, batch_size=opt.batch_size, shuffle=False,
+            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
 
     ## {'airplane': 0, 'automobile': 1, 'bird': 2, 'cat': 3, 'deer': 4, 'dog': 5, 'frog': 6, 'horse': 7, 'ship': 8, 'truck': 9}
     if opt.dataset != 'voc':
@@ -325,7 +351,7 @@ def set_loader(opt):
 
 
     if opt.validate or opt.test:
-        return mean_loader, val_loader, opt
+        return mean_loader, val_loader, mean_loader, opt
     else:
         return train_loader, opt
 
@@ -404,32 +430,44 @@ def train(train_loader, criterion, optimizer, epoch, opt):
     return losses.avg
 
 
-def init_val_test(train_loader, val_loader, criterion, opt):
+def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
     mean_features = [[] for _ in range(opt.num_classes)]
     print(opt.num_classes)
 
-    all_outputs = []
-    all_labels = []
+    try:
+        mean_features = torch.load('./save/SupCon/%s_mean_features.pth' %str(opt.dataset), map_location=torch.device('cuda'))
+        print("Loaded")
 
-    for i, (images, labels) in enumerate(train_loader):
-        images = images.cuda(non_blocking=True)
-        out = criterion.backbone_q(images).detach().cpu().numpy()
-        if type(all_outputs).__name__ == 'list':
-            all_outputs = out
-            all_labels = labels
-        else:
-            all_outputs = np.concatenate((all_outputs, out), 0)
-            all_labels = np.concatenate((all_labels, labels), 0)
+    except:
+        all_outputs = []
+        all_labels = []
 
-    for j in range(all_outputs.shape[0]):
-        mean_features[all_labels[j]].append(all_outputs[j])
+        for i, (images, labels) in enumerate(mean_loader):
+            if opt.dataset == 'voc':
+                images = images[0].cuda(non_blocking=True)
+                for k in range(len(labels)):
+                    labels[k] = opt.class_to_idx[labels[k]]
+            else:
+                images = images.cuda(non_blocking=True)
+            out = criterion.backbone_q(images).detach().cpu().numpy()
+            all_outputs.extend(out)
+            all_labels.extend(labels)
 
+        label_count = [0 for _ in range(opt.num_classes)]
 
-    num_imgs_train = len(mean_features[0])
-    mean_features = np.array(mean_features)
-    mean_features = np.sum(mean_features, axis=1)/num_imgs_train
-    mean_features = mean_features/np.sqrt(np.sum(np.square(mean_features), axis=1, keepdims=True))
-    mean_features = torch.tensor(np.transpose(mean_features)).cuda()
+        for j in range(len(all_outputs)):
+            if len(mean_features[all_labels[j]]) == 0:
+                mean_features[all_labels[j]] = all_outputs[j]
+            else:
+                mean_features[all_labels[j]] += all_outputs[j]
+            label_count[all_labels[j]] += 1
+
+        mean_features = np.array(mean_features)
+        mean_features = [mean_features[i]/label_count[i] for i in range(len(label_count))]
+        mean_features = mean_features/np.sqrt(np.sum(np.square(mean_features), axis=1, keepdims=True))
+        mean_features = torch.tensor(np.transpose(mean_features)).cuda()
+
+        torch.save(mean_features, './save/SupCon/%s_mean_features.pth'%str(opt.dataset))
 
     return mean_features
 
@@ -454,62 +492,18 @@ def load_saved_model(opt, criterion):
 
 
 def test(opt):
-    train_loader, val_loader, opt = set_loader(opt)
+    train_loader, val_loader, mean_loader, opt = set_loader(opt)
     criterion, _ = set_model(opt)
 
     load_saved_model(opt, criterion)
-    mean_features = init_val_test(train_loader, val_loader, criterion, opt)
+    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
 
-    # for i, (images, labels) in enumerate(test_loader):
-    #     print(images.shape)
-    #     exit()
-
-    boxes_ret, num_boxes_per_image, predictions, images = run_test(opt)
-    ## convert image to rgb format
-
-    mean = (0.4913997551666284, 0.48215855929893703, 0.4465309133731618)
-    std = (0.24703225141799082, 0.24348516474564, 0.26158783926049628)
-    norm = transforms.Compose([transforms.Resize((opt.size, opt.size)),
-                                transforms.Normalize(mean=mean, std=std)                                
-    ])
-
-    seen_boxes = 0
-    for i in range(len(num_boxes_per_image)):
-        img = images[i]
-        input_image = []
-        for j in range(num_boxes_per_image[i]):
-            out_filename = './'+str(j)
-            sec = boxes_ret[j+seen_boxes].int()
-            im = transforms.functional.crop(torch.FloatTensor(img.copy()).permute(2, 0, 1), sec[1], sec[0], sec[3]-sec[1], sec[2]-sec[0])
-            im = norm(im/255).cuda(non_blocking=True)
-            input_image.append(im)
-
-        seen_boxes += num_boxes_per_image[i]
-        input_image = torch.stack(input_image).cuda(non_blocking=True)
-
-        out = criterion.backbone_q(input_image)
-        out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-        sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-        per_img_labels = [criterion.class_names[x.item()] for x in sim]
-    
-        out_filename = './'+str(i)
-        vis = Visualizer(img[:, :, ::-1])
-        out = vis.draw_instance_predictions(predictions[i]['instances'], labels=per_img_labels)
-        out.save(out_filename)
-
-
-
-def validation(opt):
-    train_loader, val_loader, opt = set_loader(opt)
-    criterion, _ = set_model(opt)
-
-    load_saved_model(opt, criterion)
-
-    mean_features = init_val_test(train_loader, val_loader, criterion, opt)
+    test_dataset = TestDataLoader(opt.test_dir, transform=normalize)
+    test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False)
 
     num_imgs_valid = 0
-    acc = 0
-    for i, (images, labels) in enumerate(val_loader):
+    acc = 0 
+    for i, (images, labels) in enumerate(test_dataloader):
         images = images.cuda(non_blocking=True)
         labels = labels.cuda(non_blocking=True)
         num_imgs_valid += images.shape[0]
@@ -518,6 +512,70 @@ def validation(opt):
         sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
         sim = torch.sum(torch.where(sim == labels, 1, 0))
         acc += sim.item()
+
+    print("Test Accuracy", acc/num_imgs_valid)
+    
+
+    # seen_boxes = 0
+    # for i in opt.input:
+    #     img = np.array(Image.open(i))
+    #     img = val_transform(img).unsqueeze(0).cuda()
+    #     # img = torchvision.io.read_image(i).float()
+    #     # img = images[i].copy()
+    #     # img = normalize(img).cuda(non_blocking=True).unsqueeze(0)
+    #     # input_image = []
+    #     # for j in range(num_boxes_per_image[i]):
+    #     #     out_filename = './'+str(j)
+    #     #     sec = boxes_ret[j+seen_boxes].int()
+    #     #     im = transforms.functional.crop(torch.FloatTensor(img.copy()).permute(2, 0, 1), sec[1], sec[0], sec[3]-sec[1], sec[2]-sec[0])
+    #     #     im = norm(im/255).cuda(non_blocking=True)
+    #     #     input_image.append(im)
+
+    #     # seen_boxes += num_boxes_per_image[i]
+    #     # input_image = torch.stack(input_image).cuda(non_blocking=True)
+
+    #     print(opt.class_to_idx)
+    #     out = criterion.backbone_q(img)
+    #     out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+    #     print(torch.matmul(out, mean_features))
+    #     sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+    #     print(sim)
+    #     # per_img_labels = [criterion.class_names[x.item()] for x in sim]
+    
+    #     # out_filename = './'+str(i)
+    #     # vis = Visualizer(img)
+    #     # out = vis.draw_instance_predictions(predictions[i]['instances'], labels=per_img_labels)
+    #     # out.save(out_filename)
+
+
+
+def validation(opt):
+    train_loader, val_loader, mean_loader, opt = set_loader(opt)
+    criterion, _ = set_model(opt)
+
+    load_saved_model(opt, criterion)
+    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
+
+    num_imgs_valid = 0
+    acc = 0
+    image_pos_save = 0
+    all_labels = []
+    for i, (images, labels) in enumerate(val_loader):
+        # for j in range(images.shape[0]):
+        #     torchvision.utils.save_image(images[j], './datasets/cifar10-sample-images/'+str(image_pos_save)+'.png')
+        #     image_pos_save += 1
+        # exit()
+        images = images.cuda(non_blocking=True)
+        labels = labels.cuda(non_blocking=True)
+        num_imgs_valid += images.shape[0]
+        out = criterion.backbone_q(images)
+        out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+        sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+        sim = torch.sum(torch.where(sim == labels, 1, 0))
+        acc += sim.item()
+        all_labels.extend(labels)
+    # all_labels = torch.stack(all_labels)
+    # torch.save(all_labels, './datasets/cifar10-sample-images/labels.pth')
 
     print("Validation Accuracy", acc/num_imgs_valid)
 
