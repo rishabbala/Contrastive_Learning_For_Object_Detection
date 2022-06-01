@@ -59,7 +59,7 @@ class ContrastiveRanking(nn.Module):
         ## 1 for itself, 0.75 for all similar classes including, 0 for others
         ############
 
-        if self.dataset == 'cifar100' or self.dataset == 'voc':
+        if self.dataset == 'cifar100':
             if self.dataset == 'cifar100':
                 cats = {'aquatic mammals': 	['beaver', 'dolphin', 'otter', 'seal', 'whale'],
                         'fish': ['aquarium_fish', 'flatfish', 'ray', 'shark', 'trout'],
@@ -83,12 +83,12 @@ class ContrastiveRanking(nn.Module):
                         'vehicles 2': ['lawn_mower', 'rocket', 'streetcar', 'tank', 'tractor']
                         }
 
-            else:
+            # else:
 
-                cats = {'Person': ['person'],
-                        'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
-                        'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train'],
-                        'Indoor': ['bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
+            #     cats = {'Person': ['person'],
+            #             'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
+            #             'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train'],
+            #             'Indoor': ['bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
 
 
             ## Swap from 0:apple to apple:0
@@ -127,40 +127,42 @@ class ContrastiveRanking(nn.Module):
                 self.class_sims_idx[idx]['sim_class_val'][0] = 1
 
         
-        elif self.dataset == 'cifar10':
-            cats = {'airplane': ['bird', 'automobile', 'truck', 'ship'], 
-                    'automobile': ['truck', 'airplane', 'ship', 'horse'],
-                    'bird': ['airplane', 'frog', 'deer', 'horse'],
-                    'cat': ['dog', 'deer', 'horse', 'frog'],
-                    'deer': ['dog', 'cat', 'bird', 'frog'],
-                    'dog': ['cat', 'deer', 'horse', 'frog'],
-                    'frog': ['deer', 'bird', 'cat', 'ship'],
-                    'horse': ['dog', 'deer', 'cat', 'frog'],
-                    'ship': ['airplane', 'truck', 'automobile', 'frog'],
-                    'truck': ['automobile', 'ship', 'airplane', 'horse']
-                    }
+        elif self.dataset == 'cifar10' or self.dataset == 'voc':
+            if self.dataset == 'cifar10':
+                cats = {'airplane': ['bird', 'automobile', 'truck', 'ship'], 
+                        'automobile': ['truck', 'airplane', 'ship', 'horse'],
+                        'bird': ['airplane', 'frog', 'deer', 'horse'],
+                        'cat': ['dog', 'deer', 'horse', 'frog'],
+                        'deer': ['dog', 'cat', 'bird', 'frog'],
+                        'dog': ['cat', 'deer', 'horse', 'frog'],
+                        'frog': ['deer', 'bird', 'cat', 'ship'],
+                        'horse': ['dog', 'deer', 'cat', 'frog'],
+                        'ship': ['airplane', 'truck', 'automobile', 'frog'],
+                        'truck': ['automobile', 'ship', 'airplane', 'horse']
+                        }
 
-            
-            # cats = {'person': ['person'],
-            #             'bird': ['bird', 'aeroplane'],
-            #             'cat': ['dog', 'sheep'],
-            #             'cow': ['cow'],
-            #             'dog': ['dog', 'cat'],
-            #             'horse': ['horse', 'dog', 'cat'],
-            #             'sheep': ['sheep'],
-            #             'aeroplane': ['aeroplane', 'bird', 'boat'],
-            #             'bicycle': ['bicycle', 'motorbike'],
-            #             'boat': ['boat', 'car', ' bus'],
-            #             'bus': ['bus', 'car', 'boat'],
-            #             'car': ['car', 'bus'],
-            #             'motorbike': ['motorbike', 'bicycle', 'car'],
-            #             'train': ['train', 'car'],
-            #             'bottle': ['bottle', '']
-                    
-            #         'Person': ['person'],
-            #             'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
-            #             'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train'],
-            #             'Indoor': ['bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
+            else:
+                cats = {'person': [],
+                        'bird': ['aeroplane'],
+                        'cat': ['dog', 'sheep'],
+                        'cow': [],
+                        'dog': ['cat'],
+                        'horse': ['dog', 'cat'],
+                        'sheep': [],
+                        'aeroplane': ['bird', 'boat'],
+                        'bicycle': ['motorbike'],
+                        'boat': ['car', 'bus'],
+                        'bus': ['car', 'boat'],
+                        'car': ['bus'],
+                        'motorbike': ['bicycle', 'car'],
+                        'train': ['car'],
+                        'bottle': ['pottedplant'],
+                        'chair': ['sofa', 'diningtable'],
+                        'diningtable': ['chair', 'sofa'],
+                        'pottedplant': ['bottle'],
+                        'sofa': ['chair', 'diningtable'], 
+                        'tvmonitor': ['bottle']
+                        }
 
             ## Swap from 0:apple to apple:0
             name2idx = {}

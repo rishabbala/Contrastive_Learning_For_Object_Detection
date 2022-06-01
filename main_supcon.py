@@ -24,6 +24,10 @@ from util import str2bool
 from demo.demo import run_test, get_parser, setup_cfg
 from detectron2.utils.visualizer import Visualizer, VisImage
 from torch.utils.data import Dataset, DataLoader
+from detectron2.structures.instances import Instances
+from detectron2.structures.boxes import Boxes
+
+import xml.etree.ElementTree as ET
 
 from testloader import TestDataLoader
 
@@ -78,7 +82,7 @@ def parse_option():
     parser.add_argument('--mean', type=str, help='mean of dataset in path in form of str tuple')
     parser.add_argument('--std', type=str, help='std of dataset in path in form of str tuple')
     parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
-    parser.add_argument('--size', type=int, default=128, help='parameter for RandomResizedCrop')
+    parser.add_argument('--size', type=int, default=64, help='parameter for RandomResizedCrop')
 
     # other setting
     parser.add_argument('--cosine', action='store_true',
@@ -197,38 +201,50 @@ class VOC_collate:
 
         if self.train == True:
             train_transform = TwoCropTransform(transforms.Compose([
-                # transforms.RandomResizedCrop(size=img_size, scale=(0.9, 1.)),
+                transforms.RandomResizedCrop(size=img_size, scale=(0.9, 1.)),
                 transforms.RandomHorizontalFlip(),
-                # transforms.RandomApply([
-                #     transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-                # ], p=0.8),
-                # transforms.RandomGrayscale(p=0.2),
+                transforms.RandomApply([
+                    transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+                ], p=0.25),
+                transforms.RandomGrayscale(p=0.2),
                 transforms.Resize((img_size, img_size)),
             ]))
 
         else:
-            train_transform = TwoCropTransform(transforms.Resize((img_size, img_size)))
+            train_transform = TwoCropTransform(transforms.Compose([normalize,
+                                                transforms.Resize((img_size, img_size))
+                                                ]))
+
+        original_images = []
+        bboxes = []
 
         for i in batch:
+            original_images.append(i[0])
+            img_object = []
             for obj in i[1]['annotation']['object']:
                 l = obj['name']
                 x1 = int(obj['bndbox']['xmin'])
                 x2 = int(obj['bndbox']['xmax'])
                 y1 = int(obj['bndbox']['ymin'])
                 y2 = int(obj['bndbox']['ymax'])
+                img_object.append(torch.tensor([x1, y1, x2, y2]))
                 img = i[0][:, y1:y2, x1:x2]
                 img = train_transform(img)
                 images_q.append(img[0])
                 images_k.append(img[1])
                 labels.append(l)
+            img_object = torch.stack(img_object)
+            bboxes.append(img_object)
 
         images_q = torch.stack(images_q)
         images_k = torch.stack(images_k)
 
         images = [images_q, images_k]
 
-        return images, labels
-
+        if self.train:
+            return images, labels
+        else:
+            return original_images, images, labels, bboxes
 
 
 def set_loader(opt):
@@ -270,17 +286,17 @@ def set_loader(opt):
                             year='2007',
                             image_set='trainval',
                             download=False,
-                            transform=val_transform)
+                            transform=None)
         mean_dataset = datasets.VOCDetection(root=opt.data_folder,
                             year='2007',
                             image_set='trainval',
                             download=False,
-                            transform=val_transform)
+                            transform=None)
         val_dataset = datasets.VOCDetection(root=opt.data_folder,
                             year='2007',
                             image_set='test',
                             download=False,
-                            transform=val_transform)
+                            transform=None)
 
     elif opt.dataset == 'cifar100':
         train_dataset = datasets.CIFAR100(root=opt.data_folder,
@@ -313,34 +329,32 @@ def set_loader(opt):
     # print("Test Dataset size:", len(test_dataset))
 
     if opt.dataset == 'voc':
-        train_sampler = None
         train_collate = VOC_collate(train=True)
         train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=train_collate)
+            train_dataset, batch_size=opt.batch_size, shuffle=True,
+            num_workers=opt.num_workers, pin_memory=True, collate_fn=train_collate)
 
         val_collate = VOC_collate(train=False)
         val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=val_collate)
-
-        mean_loader = torch.utils.data.DataLoader(
-            mean_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, collate_fn=val_collate)
-
-    else:
-        train_sampler = None
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
-
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
+            val_dataset, batch_size=opt.batch_size, shuffle=False,
+            num_workers=opt.num_workers, pin_memory=True, collate_fn=val_collate)
 
         mean_loader = torch.utils.data.DataLoader(
             mean_dataset, batch_size=opt.batch_size, shuffle=False,
-            num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
+            num_workers=opt.num_workers, pin_memory=True, collate_fn=val_collate)
+
+    else:
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=opt.batch_size, shuffle=true,
+            num_workers=opt.num_workers, pin_memory=True)
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset, batch_size=opt.batch_size, shuffle=False,
+            num_workers=opt.num_workers, pin_memory=True)
+
+        mean_loader = torch.utils.data.DataLoader(
+            mean_dataset, batch_size=opt.batch_size, shuffle=False,
+            num_workers=opt.num_workers, pin_memory=True)
 
     ## {'airplane': 0, 'automobile': 1, 'bird': 2, 'cat': 3, 'deer': 4, 'dog': 5, 'frog': 6, 'horse': 7, 'ship': 8, 'truck': 9}
     if opt.dataset != 'voc':
@@ -385,11 +399,11 @@ def train(train_loader, criterion, optimizer, epoch, opt):
 
         images = torch.cat([images[0], images[1]], dim=0)
         labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-        if images.shape[0]>110:
-            print("sliced", images.shape)
-            images_temp = [images[:55], images[int(images.shape[0]/2):int(images.shape[0]/2)+55]]
-            images = torch.cat(images_temp, dim=0)
-            labels = labels[:55]
+        # if images.shape[0]>110:
+        #     print("sliced", images.shape)
+        #     images_temp = [images[:55], images[int(images.shape[0]/2):int(images.shape[0]/2)+55]]
+        #     images = torch.cat(images_temp, dim=0)
+        #     labels = labels[:55]
 
         if torch.cuda.is_available():
             images = images.cuda(non_blocking=True)
@@ -498,23 +512,85 @@ def test(opt):
     load_saved_model(opt, criterion)
     mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
 
-    test_dataset = TestDataLoader(opt.test_dir, transform=normalize)
-    test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False)
-
-    num_imgs_valid = 0
-    acc = 0 
-    for i, (images, labels) in enumerate(test_dataloader):
-        images = images.cuda(non_blocking=True)
-        labels = labels.cuda(non_blocking=True)
-        num_imgs_valid += images.shape[0]
-        out = criterion.backbone_q(images)
-        out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-        sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-        sim = torch.sum(torch.where(sim == labels, 1, 0))
-        acc += sim.item()
-
-    print("Test Accuracy", acc/num_imgs_valid)
+    test_dataset = TestDataLoader(opt.test_dir, opt.dataset, opt.size, transform=None)
     
+
+    if opt.dataset == 'cifar10' or opt.dataset=='cifar100':
+        test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False)
+        num_imgs_valid = 0
+        acc = 0 
+        for i, (images, labels) in enumerate(test_dataloader):
+            images = images.cuda(non_blocking=True)
+            labels = labels.cuda(non_blocking=True)
+            num_imgs_valid += images.shape[0]
+            out = criterion.backbone_q(images)
+            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+            sim = torch.sum(torch.where(sim == labels, 1, 0))
+            acc += sim.item()
+
+        print("Test Accuracy", acc/num_imgs_valid)
+
+    
+    else:
+        num_imgs_test = 0
+        acc = 0
+
+        test_collate = VOC_collate(train=False)
+        test_dataloader = torch.utils.data.DataLoader(
+                                                test_dataset, batch_size=opt.batch_size, shuffle=False,
+                                                num_workers=opt.num_workers, pin_memory=True, collate_fn=test_collate)
+
+        for idx, (original_images, images, labels, bboxes) in enumerate(test_dataloader):
+            print(idx, len(test_dataloader))
+            num_imgs_test += images[0].shape[0]
+            images = torch.cat([images[0], images[1]], dim=0)
+            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
+
+            if torch.cuda.is_available():
+                images = images.cuda(non_blocking=True)
+                labels = labels.cuda(non_blocking=True)
+            bsz = labels.shape[0]
+
+            out = criterion.backbone_q(images[:len(labels)])
+            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+
+            img_pos = 0
+            # for k in range(len(original_images)):
+            #     img_sim = sim[img_pos:img_pos+bboxes[k].shape[0]]
+            #     per_img_labels = [criterion.class_names[x.item()] for x in img_sim]
+            #     predictions = Instances(original_images[k].shape[1:], pred_boxes=Boxes(bboxes[k]), scores=torch.tensor([1]*img_sim.shape[0]), pred_classes=img_sim)
+
+            #     print(predictions)
+            #     print("saving ", k)
+            #     out_filename = './'+str(k)
+            #     vis = Visualizer(original_images[k].permute(1, 2, 0)*255)
+
+            #     out = vis.draw_instance_predictions(predictions, labels=per_img_labels)    
+            #     # out = vis.draw_instance_predictions(predictions[i]['instances'], labels=per_img_labels)
+            #     out.save(out_filename)
+
+            #     img_pos += bboxes[k].shape[0]
+
+
+            sim = torch.sum(torch.where(sim == labels, 1, 0))
+            acc += sim.item()
+
+    print("Test Accuracy: ", acc/num_imgs_test)
+
+
+                
+
+            
+
+            
+
+            
+
+           
+
+
 
     # seen_boxes = 0
     # for i in opt.input:
