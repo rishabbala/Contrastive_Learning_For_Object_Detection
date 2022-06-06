@@ -21,7 +21,10 @@ class TestDataLoader(Dataset):
             self.transform = transform
 
     def __len__(self):
-        return len(os.listdir(self.data_dir))
+        if self.dataset == 'voc':
+            return len(os.listdir(self.data_dir))
+        else:
+            return len(os.listdir(self.data_dir))-1
 
     def parse_voc_xml(self, node):
         voc_dict: Dict[str, Any] = {}
@@ -45,9 +48,17 @@ class TestDataLoader(Dataset):
         return voc_dict
 
     def __getitem__(self, idx):
-        img = self.data[idx]
-        # img = self.resize(img)
-        tree = self.labels[idx].getroot()
-        label = self.parse_voc_xml(tree)
+        if self.dataset=='voc':
+            img = self.data[idx]
+            # img = self.resize(img)
+            tree = self.labels[idx].getroot()
+            label = self.parse_voc_xml(tree)
+
+        else:
+            img = torchvision.io.read_image(self.data_dir+'/'+str(idx)+'.png').float()/255.0
+            if self.transform:
+                img = self.transform(img)
+
+            label = self.labels[idx]
 
         return img, label

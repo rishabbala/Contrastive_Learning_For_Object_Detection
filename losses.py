@@ -347,6 +347,7 @@ class ContrastiveRanking(nn.Module):
             dynamic_taus.append(self.get_dynamic_tau(class_sims[:, i]))
         #########
         ## dynamic_taus = [[0.1, 0.1, ... (512 times for each image in dataset)], ... (for n similar classes)]
+        ## starts with min_tau for similarity 1, and goes to max_tau for similarity 0
         #########
 
         ## This is to get one score for a particular rank, i.e all images in tha rank are used

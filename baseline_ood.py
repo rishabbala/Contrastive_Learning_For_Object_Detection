@@ -7,6 +7,8 @@ import sys
 import time
 import pickle
 from PIL import Image
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 import itertools
 
 import numpy as np
@@ -16,7 +18,7 @@ import torchvision
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms, datasets
 
-from losses_ood import ContrastiveRanking
+from losses import ContrastiveRanking
 from networks.resnet_big import SupConResNet
 from util import TwoCropTransform, AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate
@@ -28,12 +30,10 @@ from torch.utils.data import Dataset, DataLoader
 from detectron2.structures.instances import Instances
 from detectron2.structures.boxes import Boxes
 
-import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 
 from testloader import TestDataLoader
 
-tr = torchvision.models.wide_resnet50_2()
 
 try:
     import apex
@@ -390,27 +390,14 @@ def set_loader(opt):
         return train_loader, opt
 
 
-def set_model(opt):
-    epoch = 1
-    criterion = ContrastiveRanking(opt, SupConResNet)
-
-    if torch.cuda.is_available():
-        if torch.cuda.device_count() > 1:
-            criterion.backbone_q = torch.nn.DataParallel(criterion.backbone_q)
-            criterion.backbone_k = torch.nn.DataParallel(criterion.backbone_k)
-        criterion = criterion.cuda()
-        criterion.backbone_q.cuda()
-        criterion.backbone_k.cuda()
-        cudnn.benchmark = True
-
-    return criterion, epoch
-
 
 def train(train_loader, criterion, optimizer, epoch, opt):
     """one epoch training"""
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+
+    loss_fn = torch.nn.CrossEntropyLoss()
 
     end = time.time()
     
@@ -424,28 +411,22 @@ def train(train_loader, criterion, optimizer, epoch, opt):
 
         if opt.dataset == 'cifar10':    
             images_q_original = images[0]
-            images_k_original = images[1]
-
             in_dist_positions = torch.where(labels<opt.num_classes)[0]
 
             lab = []
             images_q = []
-            images_k = []
 
             for i in in_dist_positions:
                 lab.append(labels[i])
                 images_q.append(images_q_original[i])
-                images_k.append(images_k_original[i])
             
             labels = lab
             labels = torch.stack(labels).cuda(non_blocking=True)
             images_q = torch.stack(images_q).cuda(non_blocking=True)
-            images_k = torch.stack(images_k).cuda(non_blocking=True)
 
         if opt.dataset == 'voc':
             labels = labels.cuda(non_blocking=True)
             images_q = images[0].cuda(non_blocking=True)
-            images_k = images[1].cuda(non_blocking=True)
         
         data_time.update(time.time() - end)
         bsz = labels.shape[0]
@@ -454,14 +435,12 @@ def train(train_loader, criterion, optimizer, epoch, opt):
         warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # compute loss
-        f1 = criterion.backbone_q(images_q)
-        f2 = criterion.backbone_k(images_k)
+        f1 = criterion(images_q)
 
-        loss = criterion(f1, f2, labels)
+        loss = loss_fn(f1, labels)
 
         # update metric
         losses.update(loss.item(), bsz)
-        criterion.update_weights()
 
         optimizer.zero_grad()
         loss.backward()
@@ -532,208 +511,6 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
     return mean_features
 
 
-def load_saved_model(opt, criterion):
-    ckpt = torch.load(opt.checkpoint)['model']
-    ckpt_q = {}
-    ckpt_k = {}
-
-    for key, value in ckpt.items():
-        if 'backbone_q' in key:
-            k = key.replace('backbone_q.', '')
-            ckpt_q[k] = value
-
-        if 'backbone_k' in key:
-            k = key.replace('backbone_k.', '')
-            ckpt_k[k] = value
-
-    # print(criterion.backbone_q)
-    criterion.backbone_q.load_state_dict(ckpt_q)
-    criterion.backbone_k.load_state_dict(ckpt_k)
-
-
-def test(opt):
-    train_loader, val_loader, mean_loader, opt = set_loader(opt)
-    criterion, _ = set_model(opt)
-
-    load_saved_model(opt, criterion)
-    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
-
-    test_dataset = TestDataLoader(opt.test_dir, opt.dataset, opt.size, transform=None)
-    
-
-    if opt.dataset == 'cifar10' or opt.dataset=='cifar100':
-        test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False)
-        num_imgs_test = 0
-        acc = 0 
-        for i, (images, labels) in enumerate(test_dataloader):
-            print(i, len(test_dataloader))
-            images = images.cuda(non_blocking=True)
-            labels = labels.cuda(non_blocking=True)
-            num_imgs_test += images.shape[0]
-            out = criterion.backbone_q(images)
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
-
-        print("Test Accuracy", acc/num_imgs_test)
-
-    
-    else:
-        num_imgs_test = 0
-        acc = 0
-
-        test_collate = VOC_collate(train=False)
-        test_dataloader = torch.utils.data.DataLoader(
-                                                test_dataset, batch_size=opt.batch_size, shuffle=False,
-                                                num_workers=opt.num_workers, collate_fn=test_collate)
-
-        for idx, (original_images, images, labels, bboxes) in enumerate(test_dataloader):
-            print(idx, len(test_dataloader))
-            num_imgs_test += images[0].shape[0]
-            images = torch.cat([images[0], images[1]], dim=0)
-            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-
-            if torch.cuda.is_available():
-                images = images.cuda(non_blocking=True)
-                labels = labels.cuda(non_blocking=True)
-            bsz = labels.shape[0]
-
-            out = criterion.backbone_q(images[:len(labels)])
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-
-            img_pos = 0
-            # for k in range(len(original_images)):
-            #     img_sim = sim[img_pos:img_pos+bboxes[k].shape[0]]
-            #     per_img_labels = [criterion.class_names[x.item()] for x in img_sim]
-            #     predictions = Instances(original_images[k].shape[1:], pred_boxes=Boxes(bboxes[k]), scores=torch.tensor([1]*img_sim.shape[0]), pred_classes=img_sim)
-
-            #     print(predictions)
-            #     print("saving ", k)
-            #     out_filename = './'+str(k)
-            #     vis = Visualizer(original_images[k].permute(1, 2, 0)*255)
-
-            #     out = vis.draw_instance_predictions(predictions, labels=per_img_labels)    
-            #     # out = vis.draw_instance_predictions(predictions[i]['instances'], labels=per_img_labels)
-            #     out.save(out_filename)
-
-            #     img_pos += bboxes[k].shape[0]
-
-
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
-
-        print("Test Accuracy: ", acc/num_imgs_test)
-
-
-                
-def validation(opt):
-    train_loader, val_loader, mean_loader, opt = set_loader(opt)
-    criterion, _ = set_model(opt)
-
-    load_saved_model(opt, criterion)
-    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
-
-    accuracy = []
-    true_positive_rate = []
-    false_positive_rate = []
-
-    num_images_id = 0
-    acc_id = 0
-
-    for idx, (images, labels) in enumerate(val_loader):
-
-        if opt.dataset == 'voc':
-            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-
-        in_dist_positions = torch.where(labels<opt.num_classes)[0]
-
-        labels_in_dist = []
-        images_in_dist = []
-
-        for i in in_dist_positions:
-            labels_in_dist.append(labels[i])
-            images_in_dist.append(images[i])
-
-        labels_in_dist = torch.stack(labels_in_dist).cuda(non_blocking=True)
-        images_in_dist = torch.stack(images_in_dist).cuda(non_blocking=True)
-
-        num_images_id += labels_in_dist.shape[0]
-
-        out_id = criterion.backbone_q(images_in_dist)
-        out_id = out_id/torch.sqrt(torch.sum(torch.square(out_id), dim=1, keepdim=True))
-
-        sim_id = torch.argmax(torch.matmul(out_id, mean_features), dim=1)
-        sim_id = torch.sum(torch.where(sim_id == labels_in_dist, 1, 0))
-        acc_id += sim_id.item()
-    
-    print("Validation Accuracy of In Distribuiotn", acc_id/num_images_id)
-
-
-    ood_threshold_range = np.arange(0, 1.1, 0.1)
-    for ood_threshold in ood_threshold_range:
-        print(ood_threshold)
-        num_imgs_valid = 0
-        acc = 0
-        tp = 0
-        tn = 0
-        fp = 0
-        fn = 0
-        for i, (images, labels) in enumerate(val_loader):
-
-            if opt.dataset == 'voc':
-                labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-
-            labels = torch.where(labels>opt.num_classes, opt.num_classes, labels).cuda(non_blocking=True)
-            images = images.cuda(non_blocking=True)
-            
-            num_imgs_valid += images.shape[0]
-
-            out = criterion.backbone_q(images)
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-
-            sim = torch.matmul(out, mean_features)
-            sim = torch.exp(sim)/torch.sum(torch.exp(sim), dim=1, keepdim=True)
-            sim = torch.where(torch.max(sim, dim=1).values <= ood_threshold, opt.num_classes, torch.argmax(sim, dim=1))
-
-
-            tp += torch.sum(torch.where((sim==opt.num_classes) & (labels==opt.num_classes), 1, 0))
-            fn += torch.sum(torch.where((sim!=opt.num_classes) & (labels==opt.num_classes), 1, 0))
-            fp += torch.sum(torch.where((sim==opt.num_classes) & (labels!=opt.num_classes), 1, 0))
-            tn += torch.sum(torch.where((sim!=opt.num_classes) & (labels!=opt.num_classes), 1, 0))
-
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
-
-        tpr = tp/(tp+fn)
-        fpr = fp/(fp+tn)
-
-        print(tpr, fpr)
-
-        true_positive_rate.append(tpr.item())
-        false_positive_rate.append(fpr.item())
-
-        accuracy.append(acc/num_imgs_valid)
-    
-    plt.plot(false_positive_rate, true_positive_rate)
-    plt.title("ROC Curve")
-    plt.xlabel('FPR')
-    plt.ylabel('TPR')
-    plt.savefig("./ROC.png")
-    plt.clf()
-    plt.cla()
-
-    plt.plot(ood_threshold_range, accuracy)
-    plt.title("Accuracy vs Similarity Threshold")
-    plt.xlabel('Similarity Threshold')
-    plt.ylabel('Accuracy')
-    plt.savefig("./Accuracy.png")
-
-
-    # print("Validation Accuracy", acc/num_imgs_valid)
-
-
 def main():
     opt = parse_option()
     
@@ -749,13 +526,15 @@ def main():
     train_loader, opt = set_loader(opt)
 
     # build model and criterion
-    criterion, epoch = set_model(opt)
+    epoch = 1
+    criterion = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=False).cuda()
 
     # build optimizer
-    if torch.cuda.device_count() > 1:
-        optimizer = set_optimizer(opt, criterion.module.backbone_q)
-    else:
-        optimizer = set_optimizer(opt, criterion.backbone_q)
+    optimizer = torch.optim.SGD(criterion.parameters(),
+                        lr=opt.learning_rate,
+                        momentum=opt.momentum,
+                        weight_decay=opt.weight_decay)
+
 
     start_epoch = 1
     if opt.resume:
