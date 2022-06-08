@@ -59,7 +59,7 @@ class ContrastiveRanking(nn.Module):
         ## 1 for itself, 0.75 for all similar classes including, 0 for others
         ############
 
-        if self.dataset == 'cifar100' or self.dataset == 'voc':
+        if self.dataset == 'cifar100':
             if self.dataset == 'cifar100':
                 cats = {'aquatic mammals': 	['beaver', 'dolphin', 'otter', 'seal', 'whale'],
                         'fish': ['aquarium_fish', 'flatfish', 'ray', 'shark', 'trout'],
@@ -83,12 +83,12 @@ class ContrastiveRanking(nn.Module):
                         'vehicles 2': ['lawn_mower', 'rocket', 'streetcar', 'tank', 'tractor']
                         }
 
-            else:
-                ## motorbike and chair removed
-                cats = {'Person': ['person'],
-                        'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
-                        'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'train'],
-                        'Indoor': ['bottle', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
+            # else:
+            #     ## motorbike and chair removed
+            #     cats = {'Person': ['person'],
+            #             'Animal': ['bird', 'cat', 'cow', 'dog', 'horse', 'sheep'],
+            #             'Vehicle': ['aeroplane', 'bicycle', 'boat', 'bus', 'car', 'train'],
+            #             'Indoor': ['bottle', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']}
 
 
             ## Swap from 0:apple to apple:0
@@ -127,7 +127,7 @@ class ContrastiveRanking(nn.Module):
                 self.class_sims_idx[idx]['sim_class_val'][0] = 1
 
         
-        elif self.dataset == 'cifar10':
+        elif self.dataset == 'cifar10' or self.dataset == 'voc':
             if self.dataset == 'cifar10':
                 ## removed ship and train
                 cats = {'airplane': ['bird', 'automobile'],
@@ -140,28 +140,25 @@ class ContrastiveRanking(nn.Module):
                         'horse': ['dog', 'deer', 'cat', 'frog'],
                         }
 
-            # else:
-            #     cats = {'person': [],
-            #             'bird': ['aeroplane'],
-            #             'cat': ['dog', 'sheep'],
-            #             'cow': [],
-            #             'dog': ['cat'],
-            #             'horse': ['dog', 'cat'],
-            #             'sheep': [],
-            #             'aeroplane': ['bird', 'boat'],
-            #             'bicycle': ['motorbike'],
-            #             'boat': ['car', 'bus'],
-            #             'bus': ['car', 'boat'],
-            #             'car': ['bus'],
-            #             'motorbike': ['bicycle', 'car'],
-            #             'train': ['car'],
-            #             'bottle': ['pottedplant'],
-            #             'chair': ['sofa', 'diningtable'],
-            #             'diningtable': ['chair', 'sofa'],
-            #             'pottedplant': ['bottle'],
-            #             'sofa': ['chair', 'diningtable'], 
-            #             'tvmonitor': ['bottle']
-            #             }
+            else:
+                cats = {'person': [],
+                        'bird': ['aeroplane'],
+                        'cat': ['dog', 'sheep'],
+                        'cow': [],
+                        'dog': ['cat'],
+                        'horse': ['dog', 'cat'],
+                        'sheep': [],
+                        'aeroplane': ['bird', 'boat'],
+                        'bicycle': [],
+                        'boat': ['car', 'bus'],
+                        'bus': ['car', 'boat'],
+                        'car': ['bus'],
+                        'train': ['car'],
+                        'bottle': ['pottedplant'],
+                        'diningtable': ['sofa'],
+                        'pottedplant': ['bottle'],
+                        'tvmonitor': ['bottle']
+                        }
 
             ## Swap from 0:apple to apple:0
             name2idx = {}

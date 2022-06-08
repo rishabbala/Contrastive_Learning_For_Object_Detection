@@ -44,9 +44,9 @@ except ImportError:
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
+    parser.add_argument('--save_fig', type=str2bool, default='False')
     parser.add_argument('--tsne', type=str2bool, default='False')
-    parser.add_argument('--validate', type=str2bool, default='True',
-                        help='training or validation')
+    parser.add_argument('--map', type=str2bool, default='False')
     parser.add_argument('--test', type=str2bool, default='True',
                         help='Test object detection')
     parser.add_argument('--test_dir', type=str, default=None)
@@ -117,10 +117,13 @@ def parse_option():
     parser.add_argument('--out_in_log', type=str2bool, default='False', help='')
 
     get_parser(parser)
+    global opt
     opt = parser.parse_args()    
 
     if opt.dataset == 'cifar10':
         opt.num_classes = 10
+    elif opt.dataset == 'cifar100':
+        opt.num_classes = 100
     elif opt.dataset == 'voc':
         opt.size = 64
         opt.num_classes = 20
@@ -212,6 +215,7 @@ class VOC_collate:
                 ], p=0.25),
                 transforms.RandomGrayscale(p=0.2),
                 transforms.Resize((img_size, img_size)),
+                normalize
             ]))
 
         else:
@@ -221,11 +225,14 @@ class VOC_collate:
 
         original_images = []
         bboxes = []
+        boxes_rcnn = []
+        image_rcnn = []
 
         for i in batch:
             original_images.append(i[0])
             img_object = []
             i = list(i)
+            image_rcnn.append(i[0])
             for obj in i[1]['annotation']['object']:
                 if type(i[0]).__name__ == "Image":
                     i[0] = to_tensor(i[0])
@@ -243,19 +250,20 @@ class VOC_collate:
             img_object = torch.stack(img_object)
             bboxes.append(img_object)
 
+        box_gt = torch.cat(bboxes, 0)
+
         images_q = torch.stack(images_q)
         images_k = torch.stack(images_k)
 
         images = [images_q, images_k]
 
-        if self.train or self.mean:
+        if self.train or self.mean or opt.tsne:
             return images, labels
         else:
-            return original_images, images, labels, bboxes
+            return original_images, images, labels
 
 
-def set_loader(opt):
-    # construct data loader
+def init_data_mean():
     if opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
@@ -271,6 +279,9 @@ def set_loader(opt):
     global normalize
     normalize = transforms.Normalize(mean=mean, std=std)
 
+
+def set_loader(opt):
+    # construct data loader
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
         transforms.RandomHorizontalFlip(),
@@ -330,6 +341,14 @@ def set_loader(opt):
     else:
         raise ValueError(opt.dataset)
 
+
+    ## {'airplane': 0, 'automobile': 1, 'bird': 2, 'cat': 3, 'deer': 4, 'dog': 5, 'frog': 6, 'horse': 7, 'ship': 8, 'truck': 9}
+    if opt.dataset != 'voc':
+        opt.class_to_idx = train_dataset.class_to_idx
+    
+    elif opt.dataset == 'voc':
+        opt.class_to_idx = {'person': 0, 'bird': 1, 'cat': 2, 'cow': 3, 'dog': 4, 'horse': 5, 'sheep': 6, 'aeroplane': 7, 'bicycle': 8, 'boat': 9, 'bus': 10, 'car': 11, 'motorbike': 12, 'train': 13, 'bottle': 14, 'chair': 15, 'diningtable': 16, 'pottedplant': 17, 'sofa': 18, 'tvmonitor': 19}
+
     print("Train Dataset size:", len(train_dataset))
     print("Mean Dataset size:", len(mean_dataset))
     print("Valid Dataset size:", len(val_dataset))
@@ -372,13 +391,14 @@ def set_loader(opt):
         opt.class_to_idx = {'person': 0, 'bird': 1, 'cat': 2, 'cow': 3, 'dog': 4, 'horse': 5, 'sheep': 6, 'aeroplane': 7, 'bicycle': 8, 'boat': 9, 'bus': 10, 'car': 11, 'motorbike': 12, 'train': 13, 'bottle': 14, 'chair': 15, 'diningtable': 16, 'pottedplant': 17, 'sofa': 18, 'tvmonitor': 19}
 
 
-    if opt.validate or opt.test:
+    if opt.test:
         return mean_loader, val_loader, mean_loader, opt
     else:
         return train_loader, opt
 
 
 def train(train_loader, criterion, optimizer, epoch, opt):
+    print(opt.num_classes)
     """one epoch training"""
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -440,34 +460,6 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
     all_outputs = []
     all_labels = []
 
-    if opt.tsne:
-        for i, (images, labels) in enumerate(val_loader):
-            if opt.dataset == 'voc':
-                images = images[0].cuda(non_blocking=True)
-                for k in range(len(labels)):
-                    labels[k] = opt.class_to_idx[labels[k]]
-            else:
-                images = images.cuda(non_blocking=True)
-
-            out = criterion.backbone_q(images).detach().cpu().numpy()
-            all_outputs.extend(out)
-            all_labels.extend(labels)
-
-
-        all_labels = np.array(all_labels)
-        all_outputs = np.array(all_outputs)
-        all_outputs_embedded = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=40).fit_transform(all_outputs)
-        colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
-        target_ids = range(opt.num_classes)
-        for i, c, label in zip(target_ids, colors, all_labels):
-            pos_tsne = np.where(all_labels==i)[0][:100]
-            plt.scatter(all_outputs_embedded[pos_tsne, 0], all_outputs_embedded[pos_tsne, 1], c=c, label=label)
-        plt.legend([i for i in opt.class_to_idx.keys()], ncol=4, fontsize='small')
-        plt.title("TSne_CIFAR10")
-        plt.savefig("./results/TSne_CIFAR10_depth_5.png")
-        print(all_outputs_embedded.shape)
-        exit()
-
     for i, (images, labels) in enumerate(mean_loader):
         if opt.dataset == 'voc':
             images = images[0].cuda(non_blocking=True)
@@ -475,7 +467,7 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
                 labels[k] = opt.class_to_idx[labels[k]]
         else:
             images = images.cuda(non_blocking=True)
-        out = criterion.backbone_q(images).detach().cpu().numpy()
+        out = criterion(images).detach().cpu().numpy()
         all_outputs.extend(out)
         all_labels.extend(labels)
 
@@ -493,19 +485,123 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
     mean_features = mean_features/np.sqrt(np.sum(np.square(mean_features), axis=1, keepdims=True))
     mean_features = torch.tensor(np.transpose(mean_features)).cuda()
 
+    print("Mean Feature Representations computed")
+
     return mean_features
+
+
+def load_saved_model(opt, criterion):
+    ckpt = torch.load(opt.checkpoint)['model']
+    criterion.load_state_dict(ckpt)
+
+
+def test(opt):
+    train_loader, val_loader, mean_loader, opt = set_loader(opt)
+    criterion = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=False).cuda()
+
+    load_saved_model(opt, criterion)
+    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
+
+    num_imgs_valid = 0
+    acc = 0
+
+    if opt.dataset == 'voc':
+        for idx, (original_images, images, labels) in enumerate(val_loader):
+            print(idx, len(val_loader))
+            # box_rcnn, num_boxes_per_image, pred = run_test(opt, original_images)
+            num_imgs_test += images[0].shape[0]
+            images = torch.cat([images[0], images[1]], dim=0)
+            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
+
+            if torch.cuda.is_available():
+                images = images.cuda(non_blocking=True)
+                labels = labels.cuda(non_blocking=True)
+            bsz = labels.shape[0]
+
+            out = criterion(images[:len(labels)])
+            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+
+            img_pos = 0
+
+            sim = torch.sum(torch.where(sim == labels, 1, 0))
+            acc += sim.item()
+
+        print("Test Accuracy: ", acc/num_imgs_test)
+
+
+    elif opt.dataset == 'cifar10':
+        for i, (images, labels) in enumerate(val_loader):
+            print(i, len(val_loader))
+            images = images.cuda(non_blocking=True)
+            labels = labels.cuda(non_blocking=True)
+            num_imgs_valid += images.shape[0]
+            out = criterion(images)
+            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
+            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
+            sim = torch.sum(torch.where(sim == labels, 1, 0))
+            acc += sim.item()
+
+        print("Test Accuracy", acc/num_imgs_valid)
+
+
+
+def plot_tsne():
+    criterion = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=False).cuda()
+    val_dataset = datasets.VOCDetection(root=opt.data_folder,
+                        year='2007',
+                        image_set='test',
+                        download=False,
+                        transform=None)
+    val_collate = VOC_collate(train=False)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=opt.batch_size, shuffle=False,
+        num_workers=opt.num_workers, collate_fn=val_collate)
+
+    print("Plotting Tsne")
+    all_outputs = []
+    all_labels = []
+    for i, (images, labels) in enumerate(val_loader):
+        if opt.dataset == 'voc':
+            images = images[0].cuda(non_blocking=True)
+            for k in range(len(labels)):
+                labels[k] = opt.class_to_idx[labels[k]]
+        else:
+            images = images.cuda(non_blocking=True)
+
+        out = criterion(images).detach().cpu().numpy()
+        all_outputs.extend(out)
+        all_labels.extend(labels)
+
+
+    all_labels = np.array(all_labels)
+    all_outputs = np.array(all_outputs)
+    all_outputs_embedded = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=25).fit_transform(all_outputs)
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan', 'b', 'g', 'r', 'c', 'm', 'y', 'k', 'lime', 'dodgerblue', 'chocolate']
+    target_ids = range(opt.num_classes)
+    for i, c, label in zip(target_ids, colors, all_labels):
+        pos_tsne = np.where(all_labels==i)[0][:100]
+        plt.scatter(all_outputs_embedded[pos_tsne, 0], all_outputs_embedded[pos_tsne, 1], c=c, label=label)
+    plt.legend([i for i in opt.class_to_idx.keys()], ncol=4, fontsize='small')
+    plt.savefig("./results/TSne_VOC2007_baseline.png")
+    print(all_outputs_embedded.shape)
 
 
 
 def main():
     opt = parse_option()
+
+    opt = parse_option()
+
+    init_data_mean()
+
+    if opt.tsne:
+        plot_tsne()
+        return
+
     
     if opt.test == True:
         test(opt)
-        return
-
-    if opt.validate == True:
-        validation(opt)
         return
 
     # build data loader

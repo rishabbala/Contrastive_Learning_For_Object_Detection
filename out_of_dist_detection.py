@@ -8,6 +8,7 @@ import time
 import pickle
 from PIL import Image
 import itertools
+from sklearn import metrics
 
 import numpy as np
 import torch
@@ -45,8 +46,9 @@ except ImportError:
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
-    parser.add_argument('--validate', type=str2bool, default='True',
-                        help='training or validation')
+    parser.add_argument('--save_fig', type=str2bool, default='False')
+    parser.add_argument('--tsne', type=str2bool, default='False')
+    parser.add_argument('--map', type=str2bool, default='False')
     parser.add_argument('--test', type=str2bool, default='True',
                         help='Test object detection')
     parser.add_argument('--test_dir', type=str, default=None)
@@ -117,7 +119,8 @@ def parse_option():
     parser.add_argument('--out_in_log', type=str2bool, default='False', help='')
 
     get_parser(parser)
-    opt = parser.parse_args()    
+    global opt
+    opt = parser.parse_args() 
 
     if opt.dataset == 'cifar10':
         opt.num_classes = int(0.8*10)
@@ -125,7 +128,7 @@ def parse_option():
         opt.num_classes = int(0.8*100)
     elif opt.dataset == 'voc':
         opt.size = 64
-        opt.num_classes = int(0.8*20)
+        opt.num_classes = 18
     else:
         raise ValueError("Dataset inappropriate")
 
@@ -191,12 +194,14 @@ def parse_option():
     global img_size
     img_size = opt.size
 
+
     return opt
 
 class VOC_collate:
-    def __init__(self, train=False, mean=False):
+    def __init__(self, train=False, mean=False, val=False):
         self.train = train
         self.mean = mean
+        self.val = val
 
     def __call__(self, batch):
         labels = []
@@ -232,7 +237,7 @@ class VOC_collate:
                 if type(i[0]).__name__ == "Image":
                     i[0] = to_tensor(i[0])
                 l = obj['name']
-                if l == 'chair' or l == 'motorbike':
+                if ((not self.val) or self.train) and (l == 'chair' or l == 'motorbike'):
                     continue
                 x1 = int(obj['bndbox']['xmin'])
                 x2 = int(obj['bndbox']['xmax'])
@@ -248,23 +253,18 @@ class VOC_collate:
                 img_object = torch.stack(img_object)
                 bboxes.append(img_object)
 
-        if len(images_q)>0:
-            images_q = torch.stack(images_q)
-            images_k = torch.stack(images_k)
+        images_q = torch.stack(images_q)
+        images_k = torch.stack(images_k)
 
-            images = [images_q, images_k]
+        images = [images_q, images_k]
 
-            if self.train or self.mean:
-                return images, labels
-            else:
-                return original_images, images, labels, bboxes
-
+        if self.train or self.mean or opt.tsne:
+            return images, labels
         else:
-            return None, None
+            return original_images, images, labels
 
 
-def set_loader(opt):
-    # construct data loader
+def init_data_mean():
     if opt.dataset == 'cifar100':
         mean = (0.5071, 0.4867, 0.4408)
         std = (0.2675, 0.2565, 0.2761)
@@ -280,6 +280,9 @@ def set_loader(opt):
     global normalize
     normalize = transforms.Normalize(mean=mean, std=std)
 
+
+def set_loader(opt):
+    # construct data loader
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(size=opt.size, scale=(0.2, 1.)),
         transforms.RandomHorizontalFlip(),
@@ -339,18 +342,25 @@ def set_loader(opt):
     else:
         raise ValueError(opt.dataset)
 
+    ## {'airplane': 0, 'automobile': 1, 'bird': 2, 'cat': 3, 'deer': 4, 'dog': 5, 'frog': 6, 'horse': 7, 'ship': 8, 'truck': 9}
+    if opt.dataset != 'voc':
+        opt.class_to_idx = dict(itertools.islice(train_dataset.class_to_idx.items(), 8))
+    
+    elif opt.dataset == 'voc':
+        opt.class_to_idx = {'person': 0, 'bird': 1, 'cat': 2, 'cow': 3, 'dog': 4, 'horse': 5, 'sheep': 6, 'aeroplane': 7, 'bicycle': 8, 'boat': 9, 'bus': 10, 'car': 11, 'train': 12, 'bottle': 13, 'diningtable': 14, 'pottedplant': 15, 'sofa': 16, 'tvmonitor': 17}
+
     print("Train Dataset size:", len(train_dataset))
     print("Mean Dataset size:", len(mean_dataset))
     print("Valid Dataset size:", len(val_dataset))
     # print("Test Dataset size:", len(test_dataset))
 
     if opt.dataset == 'voc':
-        train_collate = VOC_collate(train=True)
+        train_collate = VOC_collate(train=True, val=False)
         train_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=opt.batch_size, shuffle=True,
             num_workers=opt.num_workers, collate_fn=train_collate)
 
-        val_collate = VOC_collate(train=False)
+        val_collate = VOC_collate(train=False, val=True)
         val_loader = torch.utils.data.DataLoader(
             val_dataset, batch_size=opt.batch_size, shuffle=False,
             num_workers=opt.num_workers, collate_fn=val_collate)
@@ -384,7 +394,7 @@ def set_loader(opt):
         opt.class_to_idx = {'person': 0, 'bird': 1, 'cat': 2, 'cow': 3, 'dog': 4, 'horse': 5, 'sheep': 6, 'aeroplane': 7, 'bicycle': 8, 'boat': 9, 'bus': 10, 'car': 11, 'train': 12, 'bottle': 13, 'diningtable': 14, 'pottedplant': 15, 'sofa': 16, 'tvmonitor': 17}
 
 
-    if opt.validate or opt.test:
+    if opt.test:
         return mean_loader, val_loader, mean_loader, opt
     else:
         return train_loader, opt
@@ -499,6 +509,8 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
         else:
             images = images.cuda(non_blocking=True)
 
+        if type(labels).__name__ != 'Tensor':
+            labels = torch.tensor(labels)
         in_dist_positions = torch.where(labels<opt.num_classes)[0]
 
         labels_in_dist = []
@@ -529,6 +541,8 @@ def init_val_test(train_loader, val_loader, mean_loader, criterion, opt):
     mean_features = mean_features/np.sqrt(np.sum(np.square(mean_features), axis=1, keepdims=True))
     mean_features = torch.tensor(np.transpose(mean_features)).cuda()
 
+    print("Mean Feature Representations computed")
+
     return mean_features
 
 
@@ -550,85 +564,8 @@ def load_saved_model(opt, criterion):
     criterion.backbone_q.load_state_dict(ckpt_q)
     criterion.backbone_k.load_state_dict(ckpt_k)
 
-
+    
 def test(opt):
-    train_loader, val_loader, mean_loader, opt = set_loader(opt)
-    criterion, _ = set_model(opt)
-
-    load_saved_model(opt, criterion)
-    mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
-
-    test_dataset = TestDataLoader(opt.test_dir, opt.dataset, opt.size, transform=None)
-    
-
-    if opt.dataset == 'cifar10' or opt.dataset=='cifar100':
-        test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False)
-        num_imgs_test = 0
-        acc = 0 
-        for i, (images, labels) in enumerate(test_dataloader):
-            print(i, len(test_dataloader))
-            images = images.cuda(non_blocking=True)
-            labels = labels.cuda(non_blocking=True)
-            num_imgs_test += images.shape[0]
-            out = criterion.backbone_q(images)
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
-
-        print("Test Accuracy", acc/num_imgs_test)
-
-    
-    else:
-        num_imgs_test = 0
-        acc = 0
-
-        test_collate = VOC_collate(train=False)
-        test_dataloader = torch.utils.data.DataLoader(
-                                                test_dataset, batch_size=opt.batch_size, shuffle=False,
-                                                num_workers=opt.num_workers, collate_fn=test_collate)
-
-        for idx, (original_images, images, labels, bboxes) in enumerate(test_dataloader):
-            print(idx, len(test_dataloader))
-            num_imgs_test += images[0].shape[0]
-            images = torch.cat([images[0], images[1]], dim=0)
-            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-
-            if torch.cuda.is_available():
-                images = images.cuda(non_blocking=True)
-                labels = labels.cuda(non_blocking=True)
-            bsz = labels.shape[0]
-
-            out = criterion.backbone_q(images[:len(labels)])
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-            sim = torch.argmax(torch.matmul(out, mean_features), dim=1)
-
-            img_pos = 0
-            # for k in range(len(original_images)):
-            #     img_sim = sim[img_pos:img_pos+bboxes[k].shape[0]]
-            #     per_img_labels = [criterion.class_names[x.item()] for x in img_sim]
-            #     predictions = Instances(original_images[k].shape[1:], pred_boxes=Boxes(bboxes[k]), scores=torch.tensor([1]*img_sim.shape[0]), pred_classes=img_sim)
-
-            #     print(predictions)
-            #     print("saving ", k)
-            #     out_filename = './'+str(k)
-            #     vis = Visualizer(original_images[k].permute(1, 2, 0)*255)
-
-            #     out = vis.draw_instance_predictions(predictions, labels=per_img_labels)    
-            #     # out = vis.draw_instance_predictions(predictions[i]['instances'], labels=per_img_labels)
-            #     out.save(out_filename)
-
-            #     img_pos += bboxes[k].shape[0]
-
-
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
-
-        print("Test Accuracy: ", acc/num_imgs_test)
-
-
-                
-def validation(opt):
     train_loader, val_loader, mean_loader, opt = set_loader(opt)
     criterion, _ = set_model(opt)
 
@@ -642,111 +579,172 @@ def validation(opt):
     num_images_id = 0
     acc_id = 0
 
-    for idx, (images, labels) in enumerate(val_loader):
+    if opt.dataset == 'voc':
+        ood_threshold_range = np.arange(0, 0.25, 0.01)
+        for ood_threshold in ood_threshold_range:
+            print(ood_threshold)
+            num_imgs_valid = 0
+            acc = 0
+            tp = 0
+            tn = 0
+            fp = 0
+            fn = 0
 
-        if opt.dataset == 'voc':
-            labels = torch.tensor([opt.class_to_idx[i] for i in labels])
+            for i, (original_images, images, labels) in enumerate(val_loader):
+                images = images[0]
+                l_temp = []
+                for i in labels:
+                    if i == 'chair' or i == 'motorbike':
+                        l_temp.append(opt.num_classes)
+                    else:
+                        l_temp.append(opt.class_to_idx[i])
+                labels = torch.tensor(l_temp)
+                
+                images = images.cuda(non_blocking=True)
+                labels = labels.cuda(non_blocking=True)
 
-        in_dist_positions = torch.where(labels<opt.num_classes)[0]
+                labels = torch.where(labels>=opt.num_classes, opt.num_classes, labels).cuda(non_blocking=True)
+                
+                num_imgs_valid += images.shape[0]
 
-        labels_in_dist = []
-        images_in_dist = []
+                out = criterion.backbone_q(images)
+                out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
 
-        for i in in_dist_positions:
-            labels_in_dist.append(labels[i])
-            images_in_dist.append(images[i])
+                sim = torch.matmul(out, mean_features)
+                sim = torch.exp(sim)/torch.sum(torch.exp(sim), dim=1, keepdim=True)
+                sim = torch.max(sim, dim=1)
+                
+                sim = torch.where(sim.values <= ood_threshold, opt.num_classes, sim.indices)
 
-        labels_in_dist = torch.stack(labels_in_dist).cuda(non_blocking=True)
-        images_in_dist = torch.stack(images_in_dist).cuda(non_blocking=True)
+                tp += torch.sum(torch.where((sim!=opt.num_classes) & (labels!=opt.num_classes), 1, 0))
+                tn += torch.sum(torch.where((sim==opt.num_classes) & (labels==opt.num_classes), 1, 0))
+                fp += torch.sum(torch.where((sim!=opt.num_classes) & (labels==opt.num_classes), 1, 0))
+                fn += torch.sum(torch.where((sim==opt.num_classes) & (labels!=opt.num_classes), 1, 0))
+                
 
-        num_images_id += labels_in_dist.shape[0]
+                sim = torch.sum(torch.where(sim == labels, 1, 0))
+                acc += sim.item()
 
-        out_id = criterion.backbone_q(images_in_dist)
-        out_id = out_id/torch.sqrt(torch.sum(torch.square(out_id), dim=1, keepdim=True))
+            tpr = tp/(tp+fn)
+            fpr = fp/(fp+tn)
 
-        sim_id = torch.argmax(torch.matmul(out_id, mean_features), dim=1)
-        sim_id = torch.sum(torch.where(sim_id == labels_in_dist, 1, 0))
-        acc_id += sim_id.item()
-    
-    print("Validation Accuracy of In Distribuiotn", acc_id/num_images_id)
+            print(tpr, fpr)
 
+            true_positive_rate.append(tpr.item())
+            false_positive_rate.append(fpr.item())
 
-    ood_threshold_range = np.arange(0, 1.1, 0.1)
-    for ood_threshold in ood_threshold_range:
-        print(ood_threshold)
-        num_imgs_valid = 0
-        acc = 0
-        tp = 0
-        tn = 0
-        fp = 0
-        fn = 0
-        for i, (images, labels) in enumerate(val_loader):
-
-            if opt.dataset == 'voc':
-                labels = torch.tensor([opt.class_to_idx[i] for i in labels])
-
-            labels = torch.where(labels>opt.num_classes, opt.num_classes, labels).cuda(non_blocking=True)
-            images = images.cuda(non_blocking=True)
-            
-            num_imgs_valid += images.shape[0]
-
-            out = criterion.backbone_q(images)
-            out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
-
-            sim = torch.matmul(out, mean_features)
-            sim = torch.exp(sim)/torch.sum(torch.exp(sim), dim=1, keepdim=True)
-            sim = torch.where(torch.max(sim, dim=1).values <= ood_threshold, opt.num_classes, torch.argmax(sim, dim=1))
+            accuracy.append(acc/num_imgs_valid)
 
 
-            tp += torch.sum(torch.where((sim==opt.num_classes) & (labels==opt.num_classes), 1, 0))
-            fn += torch.sum(torch.where((sim!=opt.num_classes) & (labels==opt.num_classes), 1, 0))
-            fp += torch.sum(torch.where((sim==opt.num_classes) & (labels!=opt.num_classes), 1, 0))
-            tn += torch.sum(torch.where((sim!=opt.num_classes) & (labels!=opt.num_classes), 1, 0))
+    elif opt.dataset == 'cifar10':
+        ood_threshold_range = np.arange(0.1, 0.4, 0.01)
+        for ood_threshold in ood_threshold_range:
+            print(ood_threshold)
+            num_imgs_valid = 0
+            acc = 0
+            tp = 0
+            tn = 0
+            fp = 0
+            fn = 0
 
-            sim = torch.sum(torch.where(sim == labels, 1, 0))
-            acc += sim.item()
+            for i, (images, labels) in enumerate(val_loader):                
+                images = images.cuda(non_blocking=True)
+                labels = labels.cuda(non_blocking=True)
 
-        tpr = tp/(tp+fn)
-        fpr = fp/(fp+tn)
+                labels = torch.where(labels>=opt.num_classes, opt.num_classes, labels).cuda(non_blocking=True)
+                
+                num_imgs_valid += images.shape[0]
 
-        print(tpr, fpr)
+                out = criterion.backbone_q(images)
+                out = out/torch.sqrt(torch.sum(torch.square(out), dim=1, keepdim=True))
 
-        true_positive_rate.append(tpr.item())
-        false_positive_rate.append(fpr.item())
+                sim = torch.matmul(out, mean_features)
+                sim = torch.exp(sim)/torch.sum(torch.exp(sim), dim=1, keepdim=True)
+                sim = torch.max(sim, dim=1)
+                
+                sim = torch.where(sim.values <= ood_threshold, opt.num_classes, sim.indices)
 
-        accuracy.append(acc/num_imgs_valid)
-    
+                tp += torch.sum(torch.where((sim!=opt.num_classes) & (labels!=opt.num_classes), 1, 0))
+                tn += torch.sum(torch.where((sim==opt.num_classes) & (labels==opt.num_classes), 1, 0))
+                fp += torch.sum(torch.where((sim!=opt.num_classes) & (labels==opt.num_classes), 1, 0))
+                fn += torch.sum(torch.where((sim==opt.num_classes) & (labels!=opt.num_classes), 1, 0))
+                
+
+                sim = torch.sum(torch.where(sim == labels, 1, 0))
+                acc += sim.item()
+
+            tpr = tp/(tp+fn)
+            fpr = fp/(fp+tn)
+
+            print(tpr, fpr)
+
+            true_positive_rate.append(tpr.item())
+            false_positive_rate.append(fpr.item())
+
+            accuracy.append(acc/num_imgs_valid)
+        
     plt.plot(false_positive_rate, true_positive_rate)
     plt.title("ROC Curve")
     plt.xlabel('FPR')
     plt.ylabel('TPR')
-    plt.savefig("./ROC.png")
+    plt.savefig("./results/ROC_"+str(opt.dataset)+"_ranking_depth_5.png")
     plt.clf()
     plt.cla()
 
-    plt.plot(ood_threshold_range, accuracy)
-    plt.title("Accuracy vs Similarity Threshold")
-    plt.xlabel('Similarity Threshold')
-    plt.ylabel('Accuracy')
-    plt.savefig("./Accuracy.png")
+    auc = metrics.auc(false_positive_rate, true_positive_rate)
+    print("Area Under Curve", auc)
 
 
-    # print("Validation Accuracy", acc/num_imgs_valid)
+def plot_tsne():
+    criterion, _ = set_model(opt)
+    val_dataset = datasets.VOCDetection(root=opt.data_folder,
+                        year='2007',
+                        image_set='test',
+                        download=False,
+                        transform=None)
+    val_collate = VOC_collate(train=False)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=opt.batch_size, shuffle=False,
+        num_workers=opt.num_workers, collate_fn=val_collate)
+
+    print("Plotting Tsne")
+    all_outputs = []
+    all_labels = []
+    for i, (images, labels) in enumerate(val_loader):
+        images = images[0].cuda(non_blocking=True)
+
+        out = criterion.backbone_q(images).detach().cpu().numpy()
+        all_outputs.extend(out)
+        all_labels.extend(labels)
+
+
+    all_labels = np.array(all_labels)
+    all_outputs = np.array(all_outputs)
+    all_outputs_embedded = TSNE(n_components=2, learning_rate='auto', init='random', perplexity=25).fit_transform(all_outputs)
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan', 'b', 'g', 'r', 'c', 'm', 'y', 'k', 'lime', 'dodgerblue', 'chocolate']
+    target_ids = range(opt.num_classes)
+    for i, c, label in zip(target_ids, colors, all_labels):
+        pos_tsne = np.where(all_labels==i)[0][:100]
+        plt.scatter(all_outputs_embedded[pos_tsne, 0], all_outputs_embedded[pos_tsne, 1], c=c, label=label)
+    plt.legend([i for i in opt.class_to_idx.keys()], ncol=4, fontsize='small')
+    plt.savefig("./results/TSne_VOC2007_custom_ranking_depth_1.png")
+    print(all_outputs_embedded.shape)
 
 
 def main():
     opt = parse_option()
+
+    init_data_mean()
+    train_loader, opt = set_loader(opt)
+
+    if opt.tsne:
+        plot_tsne()
+        return
+
     
     if opt.test == True:
         test(opt)
         return
-
-    if opt.validate == True:
-        validation(opt)
-        return
-
-    # build data loader
-    train_loader, opt = set_loader(opt)
 
     # build model and criterion
     criterion, epoch = set_model(opt)

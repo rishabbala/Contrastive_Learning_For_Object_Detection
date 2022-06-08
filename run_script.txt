@@ -5,3 +5,37 @@ python main_supcon.py --batch_size 32 --num_workers 16 --print_freq 20 --data_fo
 
 
 python out_of_dist_detection.py --batch_size 128 --num_workers 16 --print_freq 20 --data_folder ./datasets --dataset cifar10 --cosine --learning_rate 0.5 --min_tau 0.1 --max_tau 0.6 --similarity_threshold 0.5 --n_sim_classes 5 --use_supercategories True --use_same_and_similar_class True --mixed_out_in_log True --exp_name CIFAR10_ranking_depth_1 --validate True --test False --checkpoint ./save/SupCon/cifar10_models/CIFAR10_OOD_ranking_depth_1/ckpt_epoch_400.pth --config-file ./configs/COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml --opts MODEL.WEIGHTS detectron2://COCO-Detection/faster_rcnn_R_101_FPN_3x/137851257/model_final_f6e8b1.pkl
+
+
+python baseline_ood.py --batch_size 32 --num_workers 16 --print_freq 20 --data_folder ./datasets --dataset cifar10 --cosine --learning_rate 0.5 --min_tau 0.1 --max_tau 0.6 --similarity_threshold 0.5 --n_sim_classes 1 --use_supercategories True --use_same_and_similar_class True --mixed_out_in_log True --exp_name CIFAR10_baseline --test True --map False --tsne False --checkpoint ./save/SupCon/voc_models/VOC2007_OOD_baseline/ckpt_epoch_500.pth --config-file ./configs/PascalVOC-Detection/faster_rcnn_R_50_C4.yaml --opts MODEL.WEIGHTS detectron2://PascalVOC-Detection/faster_rcnn_R_50_C4/142202221/model_final_b1acc2.pkl
+
+
+Cifar 10 resnet 350 epochs 82%
+         CL ranked 95 epochs 
+
+300 epochs iage classification
+500 epochs object detection
+
+voc 5011 train 4952 test
+
+CIFAR10:
+ranking_depth_1: 0.9085
+ranking_depth_5: 0.8937
+baseline: 0.811
+
+CIFAR10_OOD: 300 epochs
+ranking_depth_1: 0.7426231290199051
+ranking_depth_5: 0.49111580912816
+baseline: 0.6110888468794982
+
+VOC: 500 epochs
+custom_ranking_1: 0.6499065170940171
+custom_ranking_3: 0.6068376068376068
+ranking_1: 0.6784188034188035
+ranking_5: 0.6368856837606838
+baseline: 0.5829684598262453
+
+VOC_OOD auc:
+ranking_depth_1: 0.6679707752057389
+ranking_depth_5: 0.5532706015937785
+baseline: 0.5621386572263002
