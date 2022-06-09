@@ -238,7 +238,7 @@ class VOC_collate:
         image_rcnn = []
 
         for i in batch:
-            original_images.append(i[0])
+            original_images.append(to_tensor(i[0]))
             img_object = []
             i = list(i)
             image_rcnn.append(i[0])
@@ -269,7 +269,7 @@ class VOC_collate:
         if self.train or self.mean or opt.tsne:
             return images, labels
         else:
-            return original_images, images, labels
+            return original_images, images, labels, bboxes
 
 
 def init_data_mean():
@@ -532,11 +532,11 @@ def test(opt):
     load_saved_model(opt, criterion)
     mean_features = init_val_test(train_loader, val_loader, mean_loader, criterion, opt)
 
-    num_imgs_valid = 0
+    num_imgs_test = 0
     acc = 0
 
     if opt.dataset == 'voc':
-        for idx, (original_images, images, labels) in enumerate(val_loader):
+        for idx, (original_images, images, labels, bboxes) in enumerate(val_loader):
             print(idx, len(val_loader))
             # box_rcnn, num_boxes_per_image, pred = run_test(opt, original_images)
             num_imgs_test += images[0].shape[0]
@@ -561,7 +561,7 @@ def test(opt):
                     predictions = Instances(original_images[k].shape[1:], pred_boxes=Boxes(bboxes[k]), scores=torch.tensor([1]*img_sim.shape[0]), pred_classes=img_sim)
 
                     print("saving ", k)
-                    out_filename = './'+str(k)
+                    out_filename = './results/'+str(k)
                     vis = Visualizer(original_images[k].permute(1, 2, 0)*255)
 
                     out = vis.draw_instance_predictions(predictions, labels=per_img_labels)    
