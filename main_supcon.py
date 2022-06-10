@@ -526,6 +526,7 @@ def load_saved_model(opt, criterion):
 
 
 def test(opt):
+    start = time.time()
     train_loader, val_loader, mean_loader, opt = set_loader(opt)
     criterion, _ = set_model(opt)
 
@@ -573,6 +574,7 @@ def test(opt):
             acc += sim.item()
 
         print("Test Accuracy", acc/num_imgs_test)
+        print("Time", time.time()-start)
 
     elif opt.dataset == 'cifar10':
         for i, (images, labels) in enumerate(val_loader):
@@ -587,6 +589,7 @@ def test(opt):
             acc += sim.item()
 
         print("Test Accuracy", acc/num_imgs_valid)
+        print("Time", time.time()-start)
 
 
 def setup_cfg(args):
@@ -601,6 +604,7 @@ def setup_cfg(args):
 
 
 def compute_map():
+    start = time.time()
     if opt.dataset != 'voc':
         raise ValueError("Wrong Dataset")
 
@@ -611,6 +615,7 @@ def compute_map():
     val_loader = build_detection_test_loader(cfg, 'voc_2007_test')
     mAP = inference_on_dataset(model, val_loader, evaluator)
     print("Ready ", mAP)
+    print("Time", time.time()-start)
     exit()
 
 
